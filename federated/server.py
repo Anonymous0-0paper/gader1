@@ -24,9 +24,10 @@ class FederatedServer:
             config,
             device: str = "cuda"
     ):
-        self.model = model.to(device)
+        # Convert device string to torch.device
+        self.device = torch.device(device)
+        self.model = model.to(self.device)
         self.config = config
-        self.device = device
         self.num_experts = config.model.num_experts
 
         # Track global statistics
@@ -68,6 +69,9 @@ class FederatedServer:
     # federated/server.py
     # Better version - only aggregate trainable parameters
 
+    # federated/server.py
+    # Replace the aggregate method with a memory-efficient version
+
     def aggregate(
             self,
             client_updates: List[Dict],
@@ -75,22 +79,25 @@ class FederatedServer:
             activation_frequencies: List[np.ndarray]
     ) -> Dict:
         """
-        Aggregate client updates with activation-weighted expert aggregation
-        Algorithm 1, Lines 14-18: Server-side aggregation
-
-        Args:
-            client_updates: List of client model states
-            client_metrics: List of client training metrics
-            activation_frequencies: List of expert activation frequencies per client
-
-        Returns:
-            aggregation_metrics: Aggregation statistics
+        Memory-efficient aggregation with activation-weighted expert updates
+        Moves tensors to CPU during aggregation to avoid GPU OOM
         """
         num_clients = len(client_updates)
 
         # Compute client weights p_i (data proportion)
         total_samples = sum(m['num_samples'] for m in client_metrics)
         client_weights = [m['num_samples'] / total_samples for m in client_metrics]
+
+        # Move model to CPU for aggregation to save GPU memory
+        original_device = next(self.model.parameters()).device
+        self.model.cpu()
+
+        # Client updates are already on CPU from client.train()
+        # No need to move them again
+
+        # Clear GPU cache
+        if original_device.type == 'cuda':
+            torch.cuda.empty_cache()
 
         # Get current global state
         global_state = self.model.state_dict()
@@ -101,33 +108,33 @@ class FederatedServer:
             if param.requires_grad:
                 trainable_params.add(name)
 
-        # Initialize aggregated state with current global state
-        aggregated_state = {k: v.clone() for k, v in global_state.items()}
+        # Initialize aggregated state
+        aggregated_state = {}
 
         # Algorithm 1, Lines 14-16: Expert-wise aggregation
         for expert_id in range(self.num_experts):
-            # Algorithm 1, Line 15: Compute activation weights
+            # Compute activation weights
             activation_weights = []
             for i, (p_i, a_i) in enumerate(zip(client_weights, activation_frequencies)):
-                # w_{i,n} = (p_i * a_{i,n}) / sum_j(p_j * a_{j,n})
                 activation_weights.append(p_i * a_i[expert_id])
 
             # Normalize weights
             weight_sum = sum(activation_weights) + 1e-10
             activation_weights = [w / weight_sum for w in activation_weights]
 
-            # Aggregate expert parameters (only trainable ones)
+            # Get expert parameters (only trainable ones)
             expert_params = self._get_expert_params(expert_id, global_state)
             trainable_expert_params = [p for p in expert_params if p in trainable_params]
 
+            # Aggregate each parameter separately to minimize memory usage
             for param_name in trainable_expert_params:
-                # Initialize aggregated parameter
+                # Initialize on CPU
                 aggregated_param = torch.zeros_like(global_state[param_name])
 
-                # Aggregate
+                # Aggregate from clients
                 for client_idx, client_state in enumerate(client_updates):
                     weight = activation_weights[client_idx]
-                    aggregated_param += weight * client_state[param_name]
+                    aggregated_param.add_(client_state[param_name], alpha=weight)
 
                 aggregated_state[param_name] = aggregated_param
 
@@ -136,18 +143,30 @@ class FederatedServer:
         trainable_gating_params = [p for p in gating_params if p in trainable_params]
 
         for param_name in trainable_gating_params:
-            # Initialize aggregated parameter
+            # Initialize on CPU
             aggregated_param = torch.zeros_like(global_state[param_name])
 
-            # Aggregate
+            # Aggregate from clients
             for client_idx, client_state in enumerate(client_updates):
                 weight = client_weights[client_idx]
-                aggregated_param += weight * client_state[param_name]
+                aggregated_param.add_(client_state[param_name], alpha=weight)
 
             aggregated_state[param_name] = aggregated_param
 
-        # Update global model (this will also update buffers to their current state)
+        # Copy non-trainable parameters (buffers) from global state
+        for name in global_state.keys():
+            if name not in aggregated_state:
+                aggregated_state[name] = global_state[name]
+
+        # Load aggregated state
         self.model.load_state_dict(aggregated_state)
+
+        # Move model back to original device
+        self.model.to(original_device)
+
+        # Clear memory
+        if original_device.type == 'cuda':
+            torch.cuda.empty_cache()
 
         # Compute aggregation metrics
         aggregation_metrics = {

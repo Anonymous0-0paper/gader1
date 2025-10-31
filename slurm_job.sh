@@ -1,31 +1,37 @@
 #!/bin/bash -l
-#SBATCH --partition=IFIgpu
-#SBATCH --job-name=MoEFL_Train
+#SBATCH --partition=IFIgpu4090
+#SBATCH --job-name=MoEFL
 #SBATCH --mail-type=BEGIN,END,FAIL
-#SBATCH --mail-user=your_email@institution.edu
-#SBATCH --account=your_group
-#SBATCH --uid=your_username
+#SBATCH --mail-user=abolfazl.younesi@uibk.ac.at
+#SBATCH --account=DPS
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --mem=16G
+#SBATCH --mem=24G
 #SBATCH --gres=gpu:1
-#SBATCH --time=2-00:00:00
+#SBATCH --time=0-03:00:00
 #SBATCH --output=slurm_logs/slurm.%N.%j.out
 #SBATCH --error=slurm_logs/slurm.%N.%j.err
 
+echo "=== SLURM job started on $(hostname) at $(date) ==="
 # Create logs directory
 mkdir -p slurm_logs
 
 # Load required modules (adjust based on your cluster)
-module load python/3.9 cuda/11.7
+
+export PATH=/usr/local/cuda-11.8/bin:$PATH
+export LD_LIBRARY_PATH=/usr/local/cuda-11.8/lib64:$LD_LIBRARY_PATH
 
 # Activate virtual environment if needed
-# source /path/to/your/venv/bin/activate
+cd ~/gader1
+source .venv/bin/activate
+
+python --version
+nvidia-smi
 
 # Install requirements if not already installed
 pip install -r requirements.txt
 
 # Run the MoE-FL training script
-python train_moefl.py --dataset CIFAR10 --num_rounds 200 --num_experts 8 --top_k 2 --clients_per_round 5
+python train_moefl.py --dataset CIFAR10 --num_rounds 200 --device cuda
 
 echo "Job completed successfully!"

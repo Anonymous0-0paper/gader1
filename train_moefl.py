@@ -136,7 +136,7 @@ def train_federated(config: MoEFLConfig, seed: int, run_id: int):
             # Algorithm 1, Line 17: Update client model
             client.update_model(global_model_state)
 
-            # Algorithm 1, Lines 18
+            # Algorithm 1, Lines 18-34: Local training
             model_state, train_metrics, activations = client.train(round_num)
 
             # Algorithm 1, Lines 10-12: Add privacy noise
@@ -146,17 +146,26 @@ def train_federated(config: MoEFLConfig, seed: int, run_id: int):
                     config.federated.privacy_epsilon
                 )
 
-            # Collect updates
+            # Collect updates (already on CPU from client.train())
             client_updates.append(model_state)
             client_metrics.append(train_metrics)
             activation_frequencies.append(activations)
 
-            # Algorithm 1, Lines 14-18: Server aggregation
+            # Clear cache after each client to free memory
+            if config.experiment.device == 'cuda':
+                torch.cuda.empty_cache()
+
+        # Algorithm 1, Lines 14-18: Server aggregation
         agg_metrics = server.aggregate(
             client_updates,
             client_metrics,
             activation_frequencies
         )
+
+        # Clear client updates from memory
+        del client_updates
+        if config.experiment.device == 'cuda':
+            torch.cuda.empty_cache()
 
         # Update metrics
         metrics_tracker.update_round(round_num, agg_metrics)
@@ -372,6 +381,19 @@ def main():
         default=None,
         help='Number of training rounds (overrides config)'
     )
+
+    parser.add_argument(
+        '--grad_checkpoint',
+        action='store_true',
+        help='Use gradient checkpointing to save memory'
+    )
+    parser.add_argument(
+        '--batch_size',
+        type=int,
+        default=None,
+        help='Batch size (reduce if OOM)'
+    )
+
     parser.add_argument(
         '--num_experts',
         type=int,

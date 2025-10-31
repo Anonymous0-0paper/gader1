@@ -43,14 +43,14 @@ class ModelConfig:
 class FederatedConfig:
     """Federated learning configuration"""
     # Federation setup
-    num_clients: int = 20
-    clients_per_round: int = 2
+    num_clients: int = 50
+    clients_per_round: int = 5
     participation_rate: float = 0.1
 
     # Training
-    num_rounds: int = 20
-    local_epochs: int = 5
-    batch_size: int = 64
+    num_rounds: int = 200
+    local_epochs: int = 10
+    batch_size: int = 16
 
     # Optimization
     optimizer: str = "sgd"  # sgd, adam

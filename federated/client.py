@@ -13,6 +13,9 @@ import numpy as np
 import copy
 
 
+# federated/client.py
+# Fix the __init__ method and device checks
+
 class FederatedClient:
     """
     Federated learning client with MoE model
@@ -29,11 +32,13 @@ class FederatedClient:
             device: str = "cuda"
     ):
         self.client_id = client_id
-        self.model = model.to(device)
         self.train_loader = train_loader
         self.test_loader = test_loader
         self.config = config
-        self.device = device
+
+        # Convert device string to torch.device
+        self.device = torch.device(device)
+        self.model = model.to(self.device)
 
         # Activation tracking
         self.activation_counts = np.zeros(config.model.num_experts)
@@ -70,13 +75,16 @@ class FederatedClient:
         self.activation_counts = np.zeros(self.config.model.num_experts)
         self.total_samples = 0
 
+    # federated/client.py
+    # Update the train method to be more memory efficient
+
     def train(self, current_round: int) -> Tuple[Dict, Dict, np.ndarray]:
         """
-        Perform local training
+        Perform local training with memory management
         Algorithm 1, Lines 17-31: ClientUpdate function
 
         Returns:
-            model_state: Updated model parameters
+            model_state: Updated model parameters (on CPU)
             metrics: Training metrics
             activation_frequencies: Expert activation frequencies
         """
@@ -133,6 +141,10 @@ class FederatedClient:
                 total += target.size(0)
                 correct += predicted.eq(target).sum().item()
 
+                # Clear cache periodically
+                if batch_idx % 10 == 0 and self.device.type == 'cuda':
+                    torch.cuda.empty_cache()
+
             if self.config.experiment.verbose and epoch % 2 == 0:
                 print(f"Client {self.client_id}, Round {current_round}, "
                       f"Epoch {epoch}, Loss: {epoch_loss / len(self.train_loader):.4f}")
@@ -148,8 +160,15 @@ class FederatedClient:
             'num_samples': len(self.train_loader.dataset)
         }
 
+        # Move model state to CPU before returning to save GPU memory
+        model_state_cpu = {k: v.cpu() for k, v in self.model.state_dict().items()}
+
+        # Clear GPU cache
+        if self.device.type == 'cuda':
+            torch.cuda.empty_cache()
+
         # Algorithm 1, Line 35: Return updated parameters
-        return self.model.state_dict(), metrics, activation_frequencies
+        return model_state_cpu, metrics, activation_frequencies
 
     def evaluate(self) -> Dict:
         """
